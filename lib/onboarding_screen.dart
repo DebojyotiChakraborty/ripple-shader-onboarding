@@ -7,9 +7,10 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
-/// Fraction of the screen height where the ripples originate and the
-/// asterisk icon sits, measured from the reference animation.
-const _rippleCenter = Offset(0.5, 0.67);
+/// Fallback ripple origin (screen fraction) until the asterisk's real
+/// position is measured after the first layout; the epicentre then tracks
+/// the centre of the asterisk circle exactly.
+const _rippleCenterFallback = Offset(0.5, 0.67);
 
 /// One spin-burst / ripple cycle, seconds. Must equal PERIOD in
 /// shaders/ripple.frag: a ring is born at every cycle start, exactly when
@@ -44,6 +45,8 @@ class _OnboardingScreenState extends State<OnboardingScreen>
   ui.Image? _background;
   late final Ticker _ticker;
   final _time = ValueNotifier<double>(0);
+  final _center = ValueNotifier<Offset>(_rippleCenterFallback);
+  final _circleKey = GlobalKey();
   RippleStyle _style = RippleStyle.ridge;
 
   @override
@@ -74,9 +77,25 @@ class _OnboardingScreenState extends State<OnboardingScreen>
   void dispose() {
     _ticker.dispose();
     _time.dispose();
+    _center.dispose();
     _background?.dispose();
     _shader?.dispose();
     super.dispose();
+  }
+
+  /// Aligns the ripple epicentre with the asterisk circle's centre as laid
+  /// out on screen (the CustomPaint fills the screen, so global coordinates
+  /// map 1:1 onto shader space).
+  void _syncRippleCenter() {
+    if (!mounted) return;
+    final box = _circleKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return;
+    final screen = MediaQuery.sizeOf(context);
+    final c = box.localToGlobal(box.size.center(Offset.zero));
+    final fraction = Offset(c.dx / screen.width, c.dy / screen.height);
+    if ((fraction - _center.value).distance > 0.0005) {
+      _center.value = fraction;
+    }
   }
 
   /// Rotation angle in radians at ticker time [t]: a fast-attack,
@@ -90,6 +109,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
   Widget build(BuildContext context) {
     final shader = _shader;
     final background = _background;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncRippleCenter());
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -102,6 +122,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
                 shader: shader,
                 image: background,
                 time: _time,
+                center: _center,
                 style: _style,
               ),
             ),
@@ -129,6 +150,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
                     children: [
                       const Spacer(flex: 55),
                       Container(
+                        key: _circleKey,
                         width: 104,
                         height: 104,
                         alignment: Alignment.center,
@@ -267,12 +289,14 @@ class _RipplePainter extends CustomPainter {
     required this.shader,
     required this.image,
     required this.time,
+    required this.center,
     required this.style,
-  }) : super(repaint: time);
+  }) : super(repaint: Listenable.merge([time, center]));
 
   final ui.FragmentShader shader;
   final ui.Image image;
   final ValueNotifier<double> time;
+  final ValueNotifier<Offset> center;
   final RippleStyle style;
 
   @override
@@ -284,8 +308,8 @@ class _RipplePainter extends CustomPainter {
       // every ring period, so only time modulo a large multiple matters.
       // 240 is an exact multiple of _cycle, so the spin stays in phase.
       ..setFloat(2, time.value % 240)
-      ..setFloat(3, _rippleCenter.dx)
-      ..setFloat(4, _rippleCenter.dy)
+      ..setFloat(3, center.value.dx)
+      ..setFloat(4, center.value.dy)
       ..setFloat(5, image.width.toDouble())
       ..setFloat(6, image.height.toDouble())
       ..setFloat(7, style == RippleStyle.ridge ? 0 : 1)
