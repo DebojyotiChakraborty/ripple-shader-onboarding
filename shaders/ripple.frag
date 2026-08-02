@@ -47,6 +47,14 @@ const int RINGS = 4;
 const float RIDGE_SHARP = 0.004;  // outer falloff — near-step crisp edge
 const float RIDGE_TAIL = 0.025;   // inner falloff tau — the smeared band
 const float RIDGE_AMP = 0.033;    // peak displacement at the wavefront
+
+// Raised-liquid lip: a derivative-of-gaussian doublet hugging the front.
+// Its outer flank samples OUTWARD, so the bead displays a compressed copy
+// of the scene just ahead of the wave (the raised bead of water look);
+// its inner flank adds extra magnification blending into the tail.
+const float LIP_POS = -0.004;    // bead centre, just inside the edge
+const float LIP_SIGMA = 0.0035;  // bead half-width
+const float LIP_GAIN = 2.4;      // bead strength relative to RIDGE_AMP
 const float RIDGE_DARK_POS = -0.006;   // dark leading line: centre (inside edge)
 const float RIDGE_DARK_SIGMA = 0.0035; // ... and width (FWHM ~0.008 H)
 const float RIDGE_RIM_POS = -0.010;    // specular rim just inside the dark line
@@ -113,7 +121,9 @@ void main() {
       // is undefined in GLSL and poisons every pixel inside the ring.
       float tr = (x - RIDGE_RIM_POS) / RIDGE_RIM_SIGMA;
       float td = (x - RIDGE_DARK_POS) / RIDGE_DARK_SIGMA;
-      disp += a * -prof;
+      float xl = (x - LIP_POS) / LIP_SIGMA;
+      float lip = LIP_GAIN * xl * exp(-0.5 * xl * xl);
+      disp += a * (lip - prof);
       rim += a * (0.45 * dg + 0.012) * exp(-0.5 * tr * tr);
       shade += a * dg * exp(-0.5 * td * td);
     } else {
