@@ -182,9 +182,8 @@ class _OnboardingScreenState extends State<OnboardingScreen>
                           borderRadius: BorderRadius.circular(18),
                         ),
                         child: const Text(
-                          'Take control of your finances with '
-                          'budgets that fit your needs and help '
-                          'you reach your goals faster.',
+                          'Enter a realm of digital personalization '
+                          'like never before',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Color(0xF2FFFFFF),

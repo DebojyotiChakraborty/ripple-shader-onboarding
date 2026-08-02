@@ -6,7 +6,10 @@
 // glassy lens whose displacement peaks right at the wavefront and decays
 // with a long tail toward the center. Outside the front it cuts off almost
 // instantly, which reads as a crisp ridge/edge; inside, the steep gradient
-// smears the image radially. A thin specular line rides the edge.
+// smears the image radially. Measured from the reference: a narrow dark
+// line sits right at the leading edge with the subtle specular rim just
+// inside it, displacement is ~0.03 H and constant over the ring's life,
+// and rings leave the screen at full strength (no on-screen dissolve).
 //
 // Style 1 "classic": the original derivative-of-gaussian pulse (a
 // travelling "glass torus") — content just inside the wavefront is pushed
@@ -34,19 +37,34 @@ uniform sampler2D uImage;
 
 out vec4 fragColor;
 
-const float PERIOD = 3.2;   // seconds between ring births = spin cycle
-const float SPEED = 0.09;   // ring expansion, screen-heights per second
+const float PERIOD = 3.2;    // seconds between ring births = spin cycle
+const float SPEED = 0.0765;  // ring expansion, screen-heights per second (measured)
 const int RINGS = 4;
 
-// Ridge style: sharp outer cutoff, long inner tail.
-const float RIDGE_SHARP = 0.005;  // outer falloff — the crisp edge
-const float RIDGE_TAIL = 0.085;   // inner falloff — the smeared band
-const float RIDGE_AMP = 0.05;     // peak displacement at the wavefront
+// Ridge style, all measured from the reference video (units: screen heights).
+// The smear tail is an exponential tau: visible extent is ~3x this value,
+// matching the reference's 0.05-0.07 H decay band.
+const float RIDGE_SHARP = 0.004;  // outer falloff — near-step crisp edge
+const float RIDGE_TAIL = 0.025;   // inner falloff tau — the smeared band
+const float RIDGE_AMP = 0.033;    // peak displacement at the wavefront
+const float RIDGE_DARK_POS = -0.006;   // dark leading line: centre (inside edge)
+const float RIDGE_DARK_SIGMA = 0.0035; // ... and width (FWHM ~0.008 H)
+const float RIDGE_RIM_POS = -0.010;    // specular rim just inside the dark line
+const float RIDGE_RIM_SIGMA = 0.0022;
+
+// The dark line holds near-full strength while the ring grows (measured
+// over sky: -45/255 through r~0.36) then collapses late (-8/255 by
+// r~0.55); the rim tracks it, staying a subtle +3..+6/255 net after the
+// overlapping dark tail is subtracted.
+// Applied multiplicatively: it dims bright sky strongly but cannot floor
+// already-dark content to black (matching the reference's behaviour).
+float ridgeDarkGain(float r) {
+  return mix(0.26, 0.03, smoothstep(0.40, 0.55, r));
+}
 
 // Classic style.
 const float SIGMA = 0.048;  // half-width of a ring band
 const float AMP = 0.045;    // peak refraction displacement
-
 const float RIM_GAIN = 0.14;    // leading-edge highlight strength
 const float SHADE_GAIN = 0.10;  // trailing shadow strength
 
@@ -79,8 +97,10 @@ void main() {
     float age = mod(uTime, PERIOD) + float(i) * PERIOD;
     float r = age * SPEED;
 
-    // Swell in after birth, dissolve once the ring has left the screen.
-    float a = smoothstep(0.0, 0.45, age) * (1.0 - smoothstep(0.70, 0.95, r));
+    // Quick swell after birth (the ring is already sharp when it emerges
+    // from behind the asterisk disc); no on-screen dissolve — rings exit
+    // the screen at full strength, the late fade only retires them.
+    float a = smoothstep(0.0, 0.35, age) * (1.0 - smoothstep(0.85, 1.15, r));
     if (a < 0.002) continue;
 
     float x = d - r;
@@ -88,16 +108,23 @@ void main() {
     if (ridge) {
       // Lens pulse: peak at the front, sharp outside, long tail inside.
       float prof = x > 0.0 ? exp(-x / RIDGE_SHARP) : exp(x / RIDGE_TAIL);
+      float dg = ridgeDarkGain(r);
+      // NOTE: explicit squares, not pow(t, 2.0) — pow with a negative base
+      // is undefined in GLSL and poisons every pixel inside the ring.
+      float tr = (x - RIDGE_RIM_POS) / RIDGE_RIM_SIGMA;
+      float td = (x - RIDGE_DARK_POS) / RIDGE_DARK_SIGMA;
       disp += a * -prof;
-      rim += a * exp(-0.5 * pow(x / 0.005, 2.0));
-      shade += a * exp(-0.5 * pow((x + 0.030) / 0.035, 2.0));
+      rim += a * (0.45 * dg + 0.012) * exp(-0.5 * tr * tr);
+      shade += a * dg * exp(-0.5 * td * td);
     } else {
       // Crisp leading (outer) edge, soft trailing side.
       float xs = x / (SIGMA * (x > 0.0 ? 0.7 : 1.4));
       float g = exp(-0.5 * xs * xs);
+      float tr = (xs - 1.1) / 0.4;
+      float td = (xs + 0.8) / 1.1;
       disp += a * -xs * g;
-      rim += a * exp(-0.5 * pow((xs - 1.1) / 0.4, 2.0));
-      shade += a * exp(-0.5 * pow((xs + 0.8) / 1.1, 2.0));
+      rim += a * exp(-0.5 * tr * tr);
+      shade += a * exp(-0.5 * td * td);
     }
   }
 
@@ -106,10 +133,18 @@ void main() {
 
   vec3 col = texture(uImage, coverUV(sampleUv)).rgb;
 
-  // Specular rim, held back on already-bright pixels so the sky can't clip.
+  // Specular rim and dark leading line. Ridge gains are folded in per-ring
+  // (radius dependent): its rim is guarded only against true clipping and
+  // its dark line dims multiplicatively. The classic style keeps its
+  // stronger sky guard and global subtractive tints.
   float lum = dot(col, vec3(0.299, 0.587, 0.114));
-  col += vec3(0.92, 0.94, 0.90) * rim * RIM_GAIN * (1.0 - smoothstep(0.55, 0.95, lum));
-  col -= vec3(0.10, 0.12, 0.10) * shade * SHADE_GAIN;
+  if (ridge) {
+    col += vec3(0.92, 0.94, 0.90) * rim * (1.0 - 0.7 * smoothstep(0.85, 1.0, lum));
+    col *= 1.0 - min(shade, 0.8);
+  } else {
+    col += vec3(0.92, 0.94, 0.90) * rim * RIM_GAIN * (1.0 - smoothstep(0.55, 0.95, lum));
+    col -= vec3(0.10, 0.12, 0.10) * shade * SHADE_GAIN;
+  }
 
   fragColor = vec4(col, 1.0);
 }
